@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,15 +35,17 @@ func newReader(ctx context.Context, r io.Reader) io.Reader {
 }
 
 type SshWindow struct {
-	app           *tview.Application
-	WindowContent *tview.TextView
-	Window        *winman.WindowBase
-	ansi          io.Writer
-	cancel        context.CancelFunc
-	sshClient     *ssh.Client
-	running       sync.Mutex
-	cancelMutex   sync.Mutex
-	ssh           *Ssh
+	app             *tview.Application
+	WindowContent   *tview.TextView
+	Window          *winman.WindowBase
+	ansi            io.Writer
+	logOutput       *os.File
+	logOutputWriter io.Writer
+	cancel          context.CancelFunc
+	sshClient       *ssh.Client
+	running         sync.Mutex
+	cancelMutex     sync.Mutex
+	ssh             *Ssh
 }
 
 func (sw *SshWindow) Connect(addr string) {
@@ -58,7 +63,6 @@ func (sw *SshWindow) Cancel() {
 	}
 
 	sw.cancel = nil
-
 }
 
 func (sw *SshWindow) Close() {
@@ -125,7 +129,8 @@ func (sw *SshWindow) Run(cmd string) {
 	}
 }
 
-func newSshWindow(app *tview.Application, wm *winman.Manager, ssh *Ssh) *SshWindow {
+func newSshWindow(app *tview.Application, wm *winman.Manager, addr, title string, ssh *Ssh) *SshWindow {
+	var err error
 	var sw SshWindow
 
 	content := tview.NewTextView().SetDynamicColors(true).SetChangedFunc(func() { app.Draw() })
@@ -134,42 +139,126 @@ func newSshWindow(app *tview.Application, wm *winman.Manager, ssh *Ssh) *SshWind
 		return nil
 	})
 
-	sw.ansi = tview.ANSIWriter(content)
+	sw.logOutput, err = os.Create(strings.ReplaceAll(title, "/", "_") + ".log")
+	if err != nil {
+		panic(err)
+	}
+
+	sw.logOutputWriter = bufio.NewWriter(sw.logOutput)
+	ansi := tview.ANSIWriter(content)
+	sw.ansi = io.MultiWriter(ansi, sw.logOutputWriter)
 	sw.WindowContent = content
 	sw.app = app
 
 	sw.ssh = ssh
 
+	window := wm.NewWindow(). // create new window and add it to the window manager
+					SetRoot(sw.WindowContent). // have the text view above be the content of the window
+					SetDraggable(true).        // make window draggable around the screen
+					SetResizable(true).        // make the window resizable
+					SetTitle(title)            // set the window title
+
+	sw.Window = window
+
 	return &sw
 }
 
-func newSshWindows(app *tview.Application, wm *winman.Manager, hosts []string) []*SshWindow {
-	ssh := newSsh()
+func organizeWindows(windows []*winman.WindowBase, x, y, width, height int) {
+	windowWidth := width / len(windows)
 
-	sshWindows := make([]*SshWindow, len(hosts))
+	for i, win := range windows {
+		windowX := x + i*windowWidth
+		win.SetRect(windowX, y, windowWidth, y+height) // place the window
+		win.Show()
 
-	for i, host := range hosts {
-		sw := newSshWindow(app, wm, ssh)
-		sshWindows[i] = sw
+	}
+}
 
-		sw.Connect(hosts[i])
+type SshWindows struct {
+	windows map[string]*SshWindow
+	ssh     *Ssh
+	app     *tview.Application
+	wm      *winman.Manager
+}
 
-		window := wm.NewWindow(). // create new window and add it to the window manager
-						Show().                                // make window visible
-						SetRoot(sw.WindowContent).             // have the text view above be the content of the window
-						SetDraggable(true).                    // make window draggable around the screen
-						SetResizable(true).                    // make the window resizable
-						SetTitle(fmt.Sprintf("SSH %s", host)). // set the window title
-						AddButton(&winman.Button{              // create a button with an X to close the application
-				Symbol:  'X',
-				OnClick: func() { app.Stop() }, // close the application
-			})
+func (sws *SshWindows) AddHost(addr, title string) *SshWindow {
+	sw := newSshWindow(sws.app, sws.wm, addr, title, sws.ssh)
+	sws.windows[title] = sw
 
-		sw.Window = window
+	sw.Connect(addr)
 
-		window.SetRect(35*i, 5, 80, 50) // place the window
+	sws.Reorganize()
+
+	return sw
+}
+
+func (sws *SshWindows) Reorganize() {
+	x, y, width, height := sws.wm.GetRect()
+	height = height / 2
+
+	windows := make([]*winman.WindowBase, len(sws.windows))
+
+	i := 0
+	for _, win := range sws.windows {
+		windows[i] = win.Window
+		i++
 	}
 
+	organizeWindows(windows, x, y, width, height)
+	sws.app.Draw()
+}
+
+func (sws *SshWindows) RemoveHost(addr string) {
+	sw, ok := sws.windows[addr]
+
+	if !ok {
+		return
+	}
+
+	sw.Cancel()
+	sw.Window.Hide()
+
+	delete(sws.windows, addr)
+
+	sws.Reorganize()
+
+	sw.logOutput.Close()
+}
+
+func newSshWindows(app *tview.Application, wm *winman.Manager, hosts []string) *SshWindows {
+	var sws SshWindows
+
+	sws.windows = make(map[string]*SshWindow)
+	sws.ssh = newSsh()
+	sws.app = app
+	sws.wm = wm
+
+	windows := make([]*winman.WindowBase, 0)
+
+	x, y, width, height := wm.GetRect()
+	height = height / 2
+	for _, host := range hosts {
+		sw := sws.AddHost(host, fmt.Sprintf("SSH %s", host))
+
+		windows = append(windows, sw.Window)
+		organizeWindows(windows, x, y, width, height)
+		app.Draw()
+	}
+
+	return &sws
+}
+
+func (sws *SshWindows) Host(addr string) *SshWindow {
+	return sws.windows[addr]
+}
+
+func (sws *SshWindows) Hosts() []*SshWindow {
+	sshWindows := make([]*SshWindow, len(sws.windows))
+	i := 0
+	for _, window := range sws.windows {
+		sshWindows[i] = window
+		i++
+	}
 	return sshWindows
 }
 
@@ -177,24 +266,29 @@ func win() {
 	app := tview.NewApplication()
 	wm := winman.NewWindowManager()
 
-	sshs := newSshWindows(app, wm, []string{"pi3", "pi4", "pi3/pi4"})
-
 	go func() {
-		sshs[0].Run("hostname")
-		sshs[1].Run("hostname")
-		sshs[2].Run("hostname")
-		time.Sleep(time.Second * 3)
-		go sshs[0].Run("find /")
-		go sshs[1].Run("find / -type d")
-		go sshs[2].Run("find / -type f")
-		time.Sleep(time.Second * 2)
-		sshs[0].Cancel()
-		sshs[1].Cancel()
-		sshs[2].Cancel()
+		app.QueueUpdate(func() {
+			go func() {
+				sws := newSshWindows(app, wm, []string{"pi3", "pi4", "pi3/pi4"})
+				sws.Host("SSH pi3").Run("hostname")
+				sws.Host("SSH pi4").Run("hostname")
+				sws.Host("SSH pi3/pi4").Run("hostname")
+				time.Sleep(time.Second * 3)
+				go sws.Host("SSH pi3").Run("find /")
+				go sws.Host("SSH pi4").Run("find / -type d")
+				go sws.Host("SSH pi3/pi4").Run("find / -type f")
+				time.Sleep(time.Second * 2)
+				sws.RemoveHost("SSH pi3/pi4")
 
-		for _, ssh := range sshs {
-			fmt.Fprintf(ssh.ansi, "\n------------------------\n")
-		}
+				for _, ssh := range sws.Hosts() {
+					ssh.Cancel()
+					fmt.Fprintf(ssh.ansi, "\n------------------------\n")
+					ssh.Run("df -h")
+				}
+				sws.AddHost("pi4/pi3", "pi3-2")
+				sws.Host("pi3-2").Run("hostname")
+			}()
+		})
 	}()
 
 	// now, execute the application:

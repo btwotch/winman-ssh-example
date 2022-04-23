@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"io/ioutil"
 	"log"
 	"net"
@@ -44,8 +43,6 @@ func localHostKeys() ssh.HostKeyCallback {
 }
 
 func (s *Ssh) connectWithConn(conn net.Conn, addr string) *ssh.Client {
-	fmt.Fprintf(os.Stderr, "Connecting to %s\n", addr)
-
 	usr, err := user.Current()
 	if err != nil {
 		panic(err)
