@@ -48,8 +48,14 @@ type SshWindow struct {
 	ssh             *Ssh
 }
 
-func (sw *SshWindow) Connect(addr string) {
+func (sw *SshWindow) Connect(addr string) bool {
 	sw.sshClient = sw.ssh.Connect(addr)
+
+	if sw.sshClient == nil {
+		return false
+	}
+
+	return true
 }
 
 func (sw *SshWindow) Cancel() {
@@ -183,10 +189,12 @@ type SshWindows struct {
 
 func (sws *SshWindows) AddHost(addr, title string) *SshWindow {
 	sw := newSshWindow(sws.app, sws.wm, addr, title, sws.ssh)
+
+	if !sw.Connect(addr) {
+		return nil
+	}
+
 	sws.windows[title] = sw
-
-	sw.Connect(addr)
-
 	sws.Reorganize()
 
 	return sw
@@ -239,6 +247,9 @@ func newSshWindows(app *tview.Application, wm *winman.Manager, hosts []string) *
 	height = height / 2
 	for _, host := range hosts {
 		sw := sws.AddHost(host, fmt.Sprintf("SSH %s", host))
+		if sw == nil {
+			continue
+		}
 
 		windows = append(windows, sw.Window)
 		organizeWindows(windows, x, y, width, height)
@@ -263,30 +274,41 @@ func (sws *SshWindows) Hosts() []*SshWindow {
 }
 
 func win() {
+	defer func() {
+		showPanic(recover())
+	}()
+
 	app := tview.NewApplication()
 	wm := winman.NewWindowManager()
 
 	go func() {
 		app.QueueUpdate(func() {
 			go func() {
-				sws := newSshWindows(app, wm, []string{"pi3", "pi4", "pi3/pi4"})
-				sws.Host("SSH pi3").Run("hostname")
-				sws.Host("SSH pi4").Run("hostname")
-				sws.Host("SSH pi3/pi4").Run("hostname")
+				defer func() {
+					showPanic(recover())
+				}()
+
+				setupLogWindow(app, wm)
+				fmt.Fprintf(LW.Ansi, "Started\n")
+				sws := newSshWindows(app, wm, []string{})
+				ctrl := newControlWindow(app, wm)
+				pis := make([]string, 100)
+				for i, _ := range pis {
+					pis[i] = fmt.Sprintf("pi%d", i)
+				}
+				res := ctrl.Ask("Which PI?", pis, false)
+				//res := ctrl.Ask2("Which PI?", []string{"pi3", "pi4", "pi3/pi4", "asdf"})
+				for _, host := range res {
+					sws.AddHost(host, host)
+				}
 				time.Sleep(time.Second * 3)
-				go sws.Host("SSH pi3").Run("find /")
-				go sws.Host("SSH pi4").Run("find / -type d")
-				go sws.Host("SSH pi3/pi4").Run("find / -type f")
-				time.Sleep(time.Second * 2)
-				sws.RemoveHost("SSH pi3/pi4")
 
 				for _, ssh := range sws.Hosts() {
 					ssh.Cancel()
 					fmt.Fprintf(ssh.ansi, "\n------------------------\n")
+					ssh.Run("hostname")
 					ssh.Run("df -h")
 				}
-				sws.AddHost("pi4/pi3", "pi3-2")
-				sws.Host("pi3-2").Run("hostname")
 			}()
 		})
 	}()

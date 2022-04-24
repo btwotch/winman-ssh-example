@@ -93,7 +93,7 @@ func (s *Ssh) Connect(addressLine string) *ssh.Client {
 	if !ok {
 		c, err = net.Dial("tcp", addrs[0])
 		if err != nil {
-			panic(err)
+			return nil
 		}
 
 		client = s.connectWithConn(c, addrs[0])
@@ -114,7 +114,7 @@ func (s *Ssh) Connect(addressLine string) *ssh.Client {
 
 		conn, err := s.clients[prevAddrLine].Dial("tcp", addrs[i])
 		if err != nil {
-			panic(err)
+			return nil
 		}
 		client = s.connectWithConn(conn, addrs[i])
 
