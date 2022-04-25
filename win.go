@@ -5,10 +5,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/epiclabs-io/winman"
 	"github.com/gdamore/tcell/v2"
@@ -289,7 +289,8 @@ func win() {
 				}()
 
 				setupLogWindow(app, wm)
-				fmt.Fprintf(LW.Ansi, "Started\n")
+				log.SetOutput(LW.Ansi)
+				log.Printf("Started\n")
 				sws := newSshWindows(app, wm, []string{})
 				ctrl := newControlWindow(app, wm)
 				pis := make([]string, 100)
@@ -301,14 +302,14 @@ func win() {
 				for _, host := range res {
 					sws.AddHost(host, host)
 				}
-				time.Sleep(time.Second * 3)
 
 				for _, ssh := range sws.Hosts() {
 					ssh.Cancel()
 					fmt.Fprintf(ssh.ansi, "\n------------------------\n")
 					ssh.Run("hostname")
-					ssh.Run("df -h")
+					ssh.Run("df -h & sleep 10")
 				}
+				ctrl.testAskTree()
 			}()
 		})
 	}()
