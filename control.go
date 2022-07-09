@@ -124,15 +124,15 @@ func (cw *ControlWindow) Ask(question string, options []string, onlyOne bool) []
 }
 
 type LeafRet struct {
-	leafs []*Leaf
+	leaves []*Leaf
 }
 
 func (lr *LeafRet) checkedNodesImpl(l *Leaf) {
 	if l.checked {
-		lr.leafs = append(lr.leafs, l)
+		lr.leaves = append(lr.leaves, l)
 	}
 
-	for _, c := range l.leafs {
+	for _, c := range l.leaves {
 		lr.checkedNodesImpl(c)
 	}
 }
@@ -140,11 +140,11 @@ func (lr *LeafRet) checkedNodesImpl(l *Leaf) {
 func checkedNodes(l *Leaf) []*Leaf {
 	lr := LeafRet{}
 
-	lr.leafs = make([]*Leaf, 0)
+	lr.leaves = make([]*Leaf, 0)
 
 	lr.checkedNodesImpl(l)
 
-	return lr.leafs
+	return lr.leaves
 }
 
 func (cw *ControlWindow) AskTree(questions []string, ls []*Leaf) []*Leaf {
@@ -155,7 +155,7 @@ func (cw *ControlWindow) AskTree(questions []string, ls []*Leaf) []*Leaf {
 			showPanic(recover())
 		}()
 
-		leafsFlex := tview.NewFlex()
+		leavesFlex := tview.NewFlex()
 
 		for i, l := range ls {
 			currentLeaf := l
@@ -196,17 +196,17 @@ func (cw *ControlWindow) AskTree(questions []string, ls []*Leaf) []*Leaf {
 
 			leafFlex.AddItem(tree, 0, 7, true)
 
-			leafsFlex.AddItem(leafFlex, 0, 1, true)
+			leavesFlex.AddItem(leafFlex, 0, 1, true)
 		}
 
-		cw.window.SetRoot(leafsFlex)
+		cw.window.SetRoot(leavesFlex)
 	})
 
 	return <-res
 }
 
 type Leaf struct {
-	leafs   []*Leaf
+	leaves  map[string]*Leaf
 	parent  *Leaf
 	Label   string
 	checked bool
@@ -214,7 +214,11 @@ type Leaf struct {
 }
 
 func (parent *Leaf) Add(l *Leaf) {
-	parent.leafs = append(parent.leafs, l)
+	if _, ok := parent.leaves[l.Label]; ok {
+		return
+	}
+
+	parent.leaves[l.Label] = l
 
 	l.parent = parent
 
@@ -228,7 +232,7 @@ func (l *Leaf) Uncheck() {
 
 	l.node.SetText(label)
 
-	for _, c := range l.leafs {
+	for _, c := range l.leaves {
 		c.Uncheck()
 	}
 }
@@ -248,7 +252,7 @@ func (l *Leaf) Check() {
 func newLeaf(name string) *Leaf {
 	var l Leaf
 
-	l.leafs = make([]*Leaf, 0)
+	l.leaves = make(map[string]*Leaf, 0)
 	l.Label = name
 
 	l.node = tview.NewTreeNode(l.Label)
@@ -269,6 +273,7 @@ func newLeaf(name string) *Leaf {
 	return &l
 }
 
+// TODO: removeme
 func (cw *ControlWindow) testAskTree() {
 	cwd := newLeaf("Change to /tmp")
 

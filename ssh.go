@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io/ioutil"
 	"log"
 	"net"
@@ -42,19 +43,21 @@ func localHostKeys() ssh.HostKeyCallback {
 	return hostKeyCallback
 }
 
-func (s *Ssh) connectWithConn(conn net.Conn, addr string) *ssh.Client {
-	usr, err := user.Current()
-	if err != nil {
-		panic(err)
-	}
-
+func (s *Ssh) connectWithConn(conn net.Conn, addr, userName string) *ssh.Client {
 	auths := sshKeys()
 	if len(auths) == 0 {
 		panic("no auth method available")
 	}
 
+	if userName == "" {
+		usr, err := user.Current()
+		if err != nil {
+			panic(err)
+		}
+		userName = usr.Username
+	}
 	config := &ssh.ClientConfig{
-		User: usr.Username,
+		User: userName,
 		Auth: auths,
 		//HostKeyCallback: localHostKeys(),
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
@@ -68,11 +71,15 @@ func (s *Ssh) connectWithConn(conn net.Conn, addr string) *ssh.Client {
 	return ssh.NewClient(c, chans, reqs)
 }
 
-func (s *Ssh) Connect(addressLine string) *ssh.Client {
+func (s *Ssh) Connect(addressLine, userNames string) *ssh.Client {
 	var err error
 	var ok bool
 
 	addrs := strings.Split(addressLine, "/")
+	users := strings.Split(userNames, "/")
+	if len(users) > 1 && len(users) != len(addrs) {
+		panic(fmt.Errorf("count of users not count of addrs: %+v <-> %+v", users, addrs))
+	}
 
 	if len(addrs) == 0 {
 		return nil
@@ -96,7 +103,7 @@ func (s *Ssh) Connect(addressLine string) *ssh.Client {
 			return nil
 		}
 
-		client = s.connectWithConn(c, addrs[0])
+		client = s.connectWithConn(c, addrs[0], users[0])
 
 		s.clients[currAddrLine] = client
 	}
@@ -116,7 +123,11 @@ func (s *Ssh) Connect(addressLine string) *ssh.Client {
 		if err != nil {
 			return nil
 		}
-		client = s.connectWithConn(conn, addrs[i])
+		if len(users) == 1 {
+			client = s.connectWithConn(conn, addrs[i], users[0])
+		} else {
+			client = s.connectWithConn(conn, addrs[i], users[i])
+		}
 
 		s.clients[currAddrLine] = client
 	}

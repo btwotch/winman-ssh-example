@@ -2,11 +2,12 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"log"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -46,10 +47,18 @@ type SshWindow struct {
 	running         sync.Mutex
 	cancelMutex     sync.Mutex
 	ssh             *Ssh
+	addr            string
+	title           string
 }
 
-func (sw *SshWindow) Connect(addr string) bool {
-	sw.sshClient = sw.ssh.Connect(addr)
+func (sw *SshWindow) Host() (string, string) {
+	return sw.addr, sw.title
+}
+
+func (sw *SshWindow) Connect(addr, users string) bool {
+	sw.sshClient = sw.ssh.Connect(addr, users)
+
+	sw.addr = addr
 
 	if sw.sshClient == nil {
 		return false
@@ -87,7 +96,7 @@ func (sw *SshWindow) windowSize() (int, int) {
 	return width, height
 }
 
-func (sw *SshWindow) Run(cmd string) {
+func (sw *SshWindow) runImpl(cmd string, writeTo io.Writer) {
 	sw.running.Lock()
 	defer sw.running.Unlock()
 
@@ -127,17 +136,66 @@ func (sw *SshWindow) Run(cmd string) {
 	sw.cancel = cancel
 	sw.cancelMutex.Unlock()
 
+	var writer io.Writer
+	if writeTo != nil {
+		writer = io.MultiWriter(writeTo, sw.ansi)
+	} else {
+		writer = sw.ansi
+	}
+
 	for {
-		n, err := io.Copy(sw.ansi, r)
+		n, err := io.Copy(writer, r)
 		if err != nil || n == 0 {
 			break
 		}
 	}
 }
 
+func (sw *SshWindow) Run(cmd string) {
+	sw.runImpl(cmd, nil)
+	return
+}
+
+func (sw *SshWindow) RunWithReader(cmd string) io.Reader {
+	r, w := io.Pipe()
+
+	go func() {
+		defer w.Close()
+		sw.runImpl(cmd, w)
+	}()
+
+	return r
+}
+
+func (sw *SshWindow) RunWithRegex(cmd, regex string) [][]string {
+	var b bytes.Buffer
+
+	rex := regexp.MustCompile(regex)
+
+	sw.runImpl(cmd, &b)
+
+	str := b.String()
+
+	ms := rex.FindAllStringSubmatch(str, -1)
+
+	return ms
+}
+
+func (sw *SshWindow) RunAndReturnString(cmd string) string {
+	var b bytes.Buffer
+	sw.runImpl(cmd, &b)
+
+	str := b.String()
+
+	return str
+}
+
 func newSshWindow(app *tview.Application, wm *winman.Manager, addr, title string, ssh *Ssh) *SshWindow {
 	var err error
 	var sw SshWindow
+
+	sw.addr = addr
+	sw.title = title
 
 	content := tview.NewTextView().SetDynamicColors(true).SetChangedFunc(func() { app.Draw() })
 	content.SetScrollable(false)
@@ -170,6 +228,9 @@ func newSshWindow(app *tview.Application, wm *winman.Manager, addr, title string
 }
 
 func organizeWindows(windows []*winman.WindowBase, x, y, width, height int) {
+	if len(windows) == 0 {
+		return
+	}
 	windowWidth := width / len(windows)
 
 	for i, win := range windows {
@@ -187,10 +248,10 @@ type SshWindows struct {
 	wm      *winman.Manager
 }
 
-func (sws *SshWindows) AddHost(addr, title string) *SshWindow {
+func (sws *SshWindows) AddHost(addr, users, title string) *SshWindow {
 	sw := newSshWindow(sws.app, sws.wm, addr, title, sws.ssh)
 
-	if !sw.Connect(addr) {
+	if !sw.Connect(addr, users) {
 		return nil
 	}
 
@@ -233,28 +294,13 @@ func (sws *SshWindows) RemoveHost(addr string) {
 	sw.logOutput.Close()
 }
 
-func newSshWindows(app *tview.Application, wm *winman.Manager, hosts []string) *SshWindows {
+func newSshWindows(app *tview.Application, wm *winman.Manager) *SshWindows {
 	var sws SshWindows
 
 	sws.windows = make(map[string]*SshWindow)
 	sws.ssh = newSsh()
 	sws.app = app
 	sws.wm = wm
-
-	windows := make([]*winman.WindowBase, 0)
-
-	x, y, width, height := wm.GetRect()
-	height = height / 2
-	for _, host := range hosts {
-		sw := sws.AddHost(host, fmt.Sprintf("SSH %s", host))
-		if sw == nil {
-			continue
-		}
-
-		windows = append(windows, sw.Window)
-		organizeWindows(windows, x, y, width, height)
-		app.Draw()
-	}
 
 	return &sws
 }
@@ -291,25 +337,31 @@ func win() {
 				setupLogWindow(app, wm)
 				log.SetOutput(LW.Ansi)
 				log.Printf("Started\n")
-				sws := newSshWindows(app, wm, []string{})
+				sws := newSshWindows(app, wm)
 				ctrl := newControlWindow(app, wm)
-				pis := make([]string, 100)
-				for i, _ := range pis {
-					pis[i] = fmt.Sprintf("pi%d", i)
-				}
-				res := ctrl.Ask("Which PI?", pis, false)
-				//res := ctrl.Ask2("Which PI?", []string{"pi3", "pi4", "pi3/pi4", "asdf"})
-				for _, host := range res {
-					sws.AddHost(host, host)
-				}
 
-				for _, ssh := range sws.Hosts() {
-					ssh.Cancel()
-					fmt.Fprintf(ssh.ansi, "\n------------------------\n")
-					ssh.Run("hostname")
-					ssh.Run("df -h & sleep 10")
-				}
-				ctrl.testAskTree()
+				UI.SSH = sws
+				UI.CTRL = ctrl
+				Recipes.Start()
+				/*
+					pis := make([]string, 100)
+					for i, _ := range pis {
+						pis[i] = fmt.Sprintf("pi%d", i)
+					}
+					res := ctrl.Ask("Which PI?", pis, false)
+					//res := ctrl.Ask2("Which PI?", []string{"pi3", "pi4", "pi3/pi4", "asdf"})
+					for _, host := range res {
+						sws.AddHost(host, host)
+					}
+
+					for _, ssh := range sws.Hosts() {
+						ssh.Cancel()
+						fmt.Fprintf(ssh.ansi, "\n------------------------\n")
+						ssh.Run("hostname")
+						ssh.Run("df -h & sleep 10")
+					}
+					ctrl.testAskTree()
+				*/
 			}()
 		})
 	}()
